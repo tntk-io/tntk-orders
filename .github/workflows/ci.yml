@@ -70,18 +70,15 @@ jobs:
           rm -rf manifest
           helm template $APPLICATION_NAME .devops/helm/order -f .devops/helm/order/values.yaml  --create-namespace -n $APPLICATION_NAMESPACE --output-dir manifest \
             --set image.repository=$REGISTRY/$ENVIRONMENT/order \
-            --set image.tag=$SHA8 \
-            --set configmapData.SSM_PREFIX=/$ENVIRONMENT \
-            --set configmapData.AWS_REGION=$AWS_REGION \
+            --set image.tag=$SHA8 
 
       - name: Pushes to another repository
         uses: cpina/github-action-push-to-another-repository@main
         env:
           API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
-          CD_DESTINATION: ${{ secrets.API_TOKEN_GITHUB }}
         with:
           source-directory: "manifest"
-          target-directory: "bookapp/charts/order"
+          target-directory: "bookapp/"
           destination-github-username: ${{ env.CD_DESTINATION_OWNER }}
           destination-repository-name: ${{ env.CD_PROJECT }}
           target-branch: ${{ env.ENVIRONMENT }}
