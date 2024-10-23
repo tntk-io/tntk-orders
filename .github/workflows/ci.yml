@@ -1,84 +1,115 @@
-name: Integration
+name: Docker Build and Deploy
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
-    branches: ["prod"]
-  pull_request:
-    branches: ["prod"]
+    branches:
+      - stage
+      - main
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-env:
-  ENVIRONMENT: ${{ github.ref_name }}
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
-  APPLICATION_NAMESPACE: ${{ vars.APPLICATION_NAMESPACE }}
-  CD_DESTINATION_OWNER: ${{ vars.CD_DESTINATION_OWNER }}
-  CD_PROJECT: ${{ vars.CD_PROJECT }}
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  get_inputs:
-    outputs:
-      sha8: ${{ steps.slug.outputs.sha8 }}
-    runs-on: self-hosted
+  build-tag-push:
+    runs-on: ubuntu-latest
     steps:
-      - name: Get short SHA
-        id: slug
-        run: echo "sha8=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
-      
-  build_images_and_push:
-    needs: [get_inputs]
-    runs-on: self-hosted
-    outputs:
-      registry: ${{ steps.login-ecr.outputs.registry }}
-    steps:
-      - name: Check out
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
-          mask-aws-account-id: "false"
+          role-to-assume: arn:aws:iam::954045451317:role/github-actions-ecr
+          aws-region: us-west-2
+          role-session-name: OIDCSession
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-      - name: Build order image and push to ECR
+
+      - name: Build, tag, and push docker image for prod
+        if: github.ref == 'refs/heads/main'
         env:
-          SHA8: ${{ needs.get_inputs.outputs.sha8 }}
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          COMPONENT_NAME: "order"
+          REPOSITORY: tntk-api
+          PROD_TAG: ${{ github.sha }}
         run: |
-          docker build -f .devops/docker/$COMPONENT_NAME.dockerfile -t $REGISTRY/$ENVIRONMENT/$COMPONENT_NAME:$SHA8 src/$COMPONENT_NAME/
-          docker push $REGISTRY/$ENVIRONMENT/$COMPONENT_NAME:$SHA8
+          docker build -t $REGISTRY/$REPOSITORY:$PROD_TAG .
+          docker tag $REGISTRY/$REPOSITORY:$PROD_TAG $REGISTRY/$REPOSITORY:latest
+          docker push $REGISTRY/$REPOSITORY:$PROD_TAG
+          docker push $REGISTRY/$REPOSITORY:latest
 
-  k8s_manifest_storing:
-    needs: [build_images_and_push, get_inputs]
-    runs-on: self-hosted
-    container:
-      image: alpine/helm:latest
+      - name: Build, tag, and push docker image for stage
+        if: github.ref == 'refs/heads/stage'
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: tntk-api-dev
+          STAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$REPOSITORY:$STAGE_TAG .
+          docker tag $REGISTRY/$REPOSITORY:$STAGE_TAG $REGISTRY/$REPOSITORY:latest
+          docker push $REGISTRY/$REPOSITORY:$STAGE_TAG
+          docker push $REGISTRY/$REPOSITORY:latest
+  manifest-updates:
+    runs-on: ubuntu-latest
+    needs: build-tag-push
     steps:
-      - name: Check out
+      - name: Checkout Helm chart repository
         uses: actions/checkout@v4
-      - name: deploy to k8s
-        env:
-          REGISTRY: ${{ needs.build_images_and_push.outputs.registry }}
-          SHA8: ${{ needs.get_inputs.outputs.sha8 }}
-        run: |
-          rm -rf manifest
-          helm template $APPLICATION_NAME .devops/helm/order -f .devops/helm/order/values.yaml  --create-namespace -n $APPLICATION_NAMESPACE --output-dir manifest \
-            --set image.repository=$REGISTRY/$ENVIRONMENT/order \
-            --set image.tag=$SHA8 
-
-      - name: Pushes to another repository
-        uses: cpina/github-action-push-to-another-repository@main
-        env:
-          API_TOKEN_GITHUB: ${{ secrets.API_TOKEN_GITHUB }}
         with:
-          source-directory: "manifest"
-          target-directory: "bookapp/"
-          destination-github-username: ${{ env.CD_DESTINATION_OWNER }}
-          destination-repository-name: ${{ env.CD_PROJECT }}
-          target-branch: ${{ env.ENVIRONMENT }}
+          repository: "tntk-io/tntk-k8s-manifests"
+          token: ${{ secrets.GH_TOKEN }}
+      - name: Install yq
+        run: |
+          # Install yq if your runner doesn't have it
+          sudo wget https://github.com/mikefarah/yq/releases/download/v4.9.3/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+      - name: Update prod manifest using yq
+        if: github.ref == 'refs/heads/main'
+        env:
+          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          PROD_TAG: ${{ github.sha }}
+          PROD_YAML_FILE: "environments/values-prod.yaml"
+        run: |
+          yq eval ".tntkApi.docker.image.tag = \"$PROD_TAG\"" -i $PROD_YAML_FILE
+      - name: Update stage manifest using yq
+        if: github.ref == 'refs/heads/stage'
+        env:
+          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          STAGE_TAG: ${{ github.sha }}
+          DEV_YAML_FILE: "environments/values-dev.yaml"
+        run: |
+          yq eval ".tntkApi.docker.image.tag = \"$STAGE_TAG\"" -i $DEV_YAML_FILE
+      - name: Push prod manifests to tntk-k8s-manifests
+        if: github.ref == 'refs/heads/main'
+        env:
+          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          PROD_TAG: ${{ github.sha }}
+          PROD_YAML_FILE: "environments/values-prod.yaml"
+        run: |
+          # Setting up Git for commit
+          git config --global user.name 'TNTK'
+          git config --global user.email 'actions@tntk.io'
+          git add $PROD_YAML_FILE
+          git commit -m "Update $SERVICE_NAME image tag to $PROD_TAG"
+          git push
+      - name: Push stage manifests to tntk-k8s-manifests
+        if: github.ref == 'refs/heads/stage'
+        env:
+          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          STAGE_TAG: ${{ github.sha }}
+          STAGE_YAML_FILE: "environments/values-dev.yaml"
+        run: |
+          # Setting up Git for commit
+          git config --global user.name 'TNTK'
+          git config --global user.email 'actions@tntk.io'
+          git add $STAGE_YAML_FILE
+          git commit -m "Update $SERVICE_NAME image tag to $STAGE_TAG"
+          git push
