@@ -38,7 +38,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: tntk-api
+          REPOSITORY: tntk-orders
           PROD_TAG: ${{ github.sha }}
         run: |
           docker build -t $REGISTRY/$REPOSITORY:$PROD_TAG .
@@ -50,7 +50,7 @@ jobs:
         if: github.ref == 'refs/heads/stage'
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: tntk-api-dev
+          REPOSITORY: tntk-orders-dev
           STAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $REGISTRY/$REPOSITORY:$STAGE_TAG .
@@ -74,7 +74,7 @@ jobs:
       - name: Update prod manifest using yq
         if: github.ref == 'refs/heads/main'
         env:
-          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          SERVICE_NAME: "tntk-orders" # This could be dynamically determined
           PROD_TAG: ${{ github.sha }}
           PROD_YAML_FILE: "environments/values-prod.yaml"
         run: |
@@ -82,7 +82,7 @@ jobs:
       - name: Update stage manifest using yq
         if: github.ref == 'refs/heads/stage'
         env:
-          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          SERVICE_NAME: "tntk-orders" # This could be dynamically determined
           STAGE_TAG: ${{ github.sha }}
           DEV_YAML_FILE: "environments/values-dev.yaml"
         run: |
@@ -90,7 +90,7 @@ jobs:
       - name: Push prod manifests to tntk-k8s-manifests
         if: github.ref == 'refs/heads/main'
         env:
-          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          SERVICE_NAME: "tntk-orders" # This could be dynamically determined
           PROD_TAG: ${{ github.sha }}
           PROD_YAML_FILE: "environments/values-prod.yaml"
         run: |
@@ -103,7 +103,7 @@ jobs:
       - name: Push stage manifests to tntk-k8s-manifests
         if: github.ref == 'refs/heads/stage'
         env:
-          SERVICE_NAME: "tntk-api" # This could be dynamically determined
+          SERVICE_NAME: "tntk-orders" # This could be dynamically determined
           STAGE_TAG: ${{ github.sha }}
           STAGE_YAML_FILE: "environments/values-dev.yaml"
         run: |
